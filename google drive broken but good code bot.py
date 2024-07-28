@@ -1,28 +1,24 @@
 import openai
 import time
-import random
 import threading
-import os
 from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler, PreCheckoutQueryHandler
 
-# Environment variables for API keys
-openai.api_key = os.getenv('sk-proj-DBE6hdXF4mR0ifNMUR5lT3BlbkFJN5gtsbrwCp76rRiDuRrD')
-telegram_bot_token = os.getenv('7301232519:AAGHn3nTOJaqVgi9jf71_aeZgMseXJq-pHw')
-payment_provider_token = os.getenv('pk_live_51M8DGiC6a8KiXQCVYJnuTZhBREmk96tIx2jgqwOJl17KFFE8VAlK13IR8OBzVPmudTHNWc09auk7d5BjEwSZzicB00k2z9MPdN')
+# Your OpenAI API key
+openai.api_key = 'your-api-key' #replace with your api key
 
-# Debug statement to check token retrieval (Remove after testing)
-print(f"Retrieved Telegram Bot Token: {telegram_bot_token}")
+# Your Telegram bot token
+telegram_bot_token = 'your-telegram-bot-token' #replace with telegram bot token
+payment_provider_token = 'payment-token' #replace with payment provider token 
 
 # Admin user IDs
-admin_user_ids = [1032127276, 7301232519]  # Replace with actual admin Telegram user IDs
+admin_user_ids = [123456789,987654321]  # Replace with actual admin Telegram user IDs
 
 # A dictionary to track user message counts and last interaction timestamp
 user_data = {}
+
 # List of file IDs for pictures
 picture_file_ids = []
-# Custom feed for users
-custom_feeds = {}
 
 # Function to send follow-up messages every 24 hours of inactivity
 def send_follow_up(updater):
@@ -65,7 +61,7 @@ def start(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
     if not check_bot_permissions(update, context):
         return
-    user_data[chat_id] = {'message_count': 0, 'last_active': time.time(), 'custom_feed': False}
+    user_data[chat_id] = {'message_count': 0, 'last_active': time.time()}
     update.message.reply_text("Hey baby. Tell me what you like and makes you excited.")
 
 def generate_image(prompt):
@@ -80,7 +76,7 @@ def generate_image(prompt):
 def chat(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
     if chat_id not in user_data:
-        user_data[chat_id] = {'message_count': 0, 'last_active': time.time(), 'custom_feed': False}
+        user_data[chat_id] = {'message_count': 0, 'last_active': time.time()}
     user_data[chat_id]['message_count'] += 1
     user_data[chat_id]['last_active'] = time.time()
     message_count = user_data[chat_id]['message_count']
@@ -107,7 +103,7 @@ def chat(update: Update, context: CallbackContext):
     update.message.reply_text(bot_reply)
 
     if message_count % 3 == 0 and picture_file_ids:
-        picture_index = random.randint(0, len(picture_file_ids) - 1)
+        picture_index = (message_count // 3 - 1) % len(picture_file_ids)
         picture_file_id = picture_file_ids[picture_index]
         try:
             context.bot.send_photo(chat_id, picture_file_id, caption="Here's a picture!")
@@ -121,7 +117,7 @@ def send_picture(update: Update, context: CallbackContext):
         context.bot.send_message(chat_id, "No pictures are available right now.")
         return
 
-    picture_index = random.randint(0, len(picture_file_ids) - 1)
+    picture_index = chat_id % len(picture_file_ids)
     picture_file_id = picture_file_ids[picture_index]
     try:
         context.bot.send_photo(chat_id, picture_file_id, caption="Here's your requested picture!")
@@ -134,12 +130,15 @@ def handle_photo(update: Update, context: CallbackContext):
         chat_id = update.message.chat_id
         user_id = update.message.from_user.id
 
-        if user_id in admin_user_ids:
-            photo_file_id = update.message.photo[-1].file_id
-            picture_file_ids.append(photo_file_id)
-            context.bot.send_message(chat_id, "Photo saved successfully!")
+        if isinstance(admin_user_ids, list) and all(isinstance(i, int) for i in admin_user_ids):
+            if user_id in admin_user_ids:
+                photo_file_id = update.message.photo[-1].file_id
+                picture_file_ids.append(photo_file_id)
+                context.bot.send_message(chat_id, "Photo saved successfully!")
+            else:
+                context.bot.send_message(chat_id, "Sorry, only admins can upload photos.")
         else:
-            context.bot.send_message(chat_id, "Sorry, only admins can upload photos.")
+            print(f"Unexpected admin_user_ids type or content: {admin_user_ids}")
 
     except Exception as e:
         print(f"Error in handle_photo: {e}")
@@ -183,39 +182,9 @@ def delete_pictures(update: Update, context: CallbackContext):
     except Exception as e:
         context.bot.send_message(chat_id, f"Error occurred while deleting pictures: {e}")
 
-def custom_feed(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    if chat_id not in custom_feeds:
-        custom_feeds[chat_id] = []
-    context.bot.send_message(chat_id, "You can now upload your custom feed. Send pictures to add to your feed.")
-
-def exit_custom_feed(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    if chat_id in custom_feeds:
-        del custom_feeds[chat_id]
-        context.bot.send_message(chat_id, "You have exited the custom feed mode.")
-    else:
-        context.bot.send_message(chat_id, "You are not in custom feed mode.")
-
-def delete_custom_feed(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    if chat_id in custom_feeds:
-        del custom_feeds[chat_id]
-        context.bot.send_message(chat_id, "Your custom feed has been deleted.")
-    else:
-        context.bot.send_message(chat_id, "You do not have a custom feed.")
-
-def buy_content(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    prices = [LabeledPrice("Lifetime Access", 2500)]  # Set appropriate price
-    context.bot.send_invoice(
-        chat_id, "Buy Content", "Lifetime access to all pics/vids + unlimited content added over time.", "buy-content",
-        payment_provider_token, "USD", prices
-    )
-
 def precheckout_callback(update: Update, context: CallbackContext):
     query = update.pre_checkout_query
-    if query.invoice_payload not in ["voluntary-support", "mandatory-support", "buy-content"]:
+    if query.invoice_payload not in ["voluntary-support", "mandatory-support"]:
         query.answer(ok=False, error_message="Something went wrong...")
     else:
         query.answer(ok=True)
@@ -250,10 +219,6 @@ def main():
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("sendpicture", send_picture))
-    dp.add_handler(CommandHandler("customfeed", custom_feed))
-    dp.add_handler(CommandHandler("exitcustomfeed", exit_custom_feed))
-    dp.add_handler(CommandHandler("deletecustomfeed", delete_custom_feed))
-    dp.add_handler(CommandHandler("buycontent", buy_content))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, chat))
     dp.add_handler(MessageHandler(Filters.photo, handle_photo))
     dp.add_handler(CommandHandler("allpictures", all_pictures))
