@@ -1,216 +1,259 @@
+import os
+import random
 import openai
 import time
 import threading
-from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler, PreCheckoutQueryHandler
+from telegram import Update, InputFile
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # Your OpenAI API key
-openai.api_key = 'your-api-key' #replace with your api key
+openai.api_key = 'your-new-openai-api-key'
 
 # Your Telegram bot token
-telegram_bot_token = 'your-telegram-bot-token' #replace with telegram bot token
-payment_provider_token = 'payment-token' #replace with payment provider token 
+telegram_bot_token = 'your-telegram-bot-token'
+payment_provider_token = 'your-payment-provider-token'
 
 # Admin user IDs
-admin_user_ids = [123456789,987654321]  # Replace with actual admin Telegram user IDs
+admin_user_ids = [0000000000, 0000000000]  # Replace with actual admin Telegram user IDs for admin and bot. Dont know where to find telegram user id? Search userinfobot on telegram, use it to find your own ID first. Then forward any message from your possibly non-functional till this is fixed bot to telegram's userinfobot
 
-# A dictionary to track user message counts and last interaction timestamp
+# A dictionary to track user message counts, last interaction timestamp, last follow-up sent timestamp, and custom feed mode
 user_data = {}
 
-# List of file IDs for pictures
-picture_file_ids = []
+# Dictionary to track custom feed file IDs for each user
+custom_feed_file_ids = {}
+# List to track main media file IDs (for admin media)
+main_media_file_ids = []
 
-# Function to send follow-up messages every 24 hours of inactivity
+# Function to send follow-up messages every 30 minutes of inactivity, but only once per 24 hours
 def send_follow_up(updater):
     while True:
         current_time = time.time()
         for user_id, data in list(user_data.items()):
             last_active = data.get('last_active', 0)
-            if current_time - last_active > 24 * 3600:  # 24 hours
+            last_follow_up = data.get('last_follow_up', 0)
+            
+            if current_time - last_active > 1800 and current_time - last_follow_up > 24 * 3600:  # 30 minutes inactivity, 24 hours since last follow-up
                 try:
                     response = openai.ChatCompletion.create(
                         model="gpt-3.5-turbo",
                         messages=[
-                            {"role": "system", "content": "You are a dominant and flirtatious girlfriend."},
-                            {"role": "user", "content": "How can I encourage users to come back after being inactive?"}
+                            {"role": "system", "content": "You are a dominant and flirtatious girlfriend engaging in first-person with the user. Focus on positive experience, encourage engagement."},
+                            {"role": "user", "content": "I haven't heard from you in a while. How can I make our time together more enjoyable?"}
                         ]
                     )
                     suggestion = response['choices'][0]['message']['content'].strip()
-                    updater.bot.send_message(user_id, f"We miss you! {suggestion}")
-                    user_data[user_id]['last_active'] = current_time
+                    updater.bot.send_message(user_id, f"I've missed you! {suggestion} (type / in chatbox to show all bot commands)")
+                    user_data[user_id]['last_follow_up'] = current_time
                 except Exception as e:
                     print(f"Error sending follow-up message: {e}")
-        time.sleep(3600)  # Check every hour
-
-def check_bot_permissions(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    bot = context.bot
-    bot_member = bot.get_chat_member(chat_id, bot.id)
-
-    print(f"Bot status: {bot_member.status}")
-    print(f"Permissions: {bot_member}")
-
-    if bot_member.status not in ['administrator', 'creator']:
-        update.message.reply_text("I need to be an admin to send photos and perform other actions.")
-        return False
-    else:
-        update.message.reply_text("I have the necessary permissions.")
-        return True
+        time.sleep(10)  # Check every 10 seconds
 
 def start(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
-    if not check_bot_permissions(update, context):
-        return
-    user_data[chat_id] = {'message_count': 0, 'last_active': time.time()}
-    update.message.reply_text("Hey baby. Tell me what you like and makes you excited.")
-
-def generate_image(prompt):
-    response = openai.Image.create(
-        prompt=prompt,
-        n=1,
-        size="1024x1024"
-    )
-    image_url = response['data'][0]['url']
-    return image_url
+    user_id = update.message.from_user.id
+    user_data[user_id] = {'message_count': 0, 'last_active': time.time(), 'last_follow_up': 0, 'in_custom_feed': False}
+    update.message.reply_text("Hey baby. Tell me what you like and makes you excited. (type / in chatbox to show all bot commands)")
 
 def chat(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    if chat_id not in user_data:
-        user_data[chat_id] = {'message_count': 0, 'last_active': time.time()}
-    user_data[chat_id]['message_count'] += 1
-    user_data[chat_id]['last_active'] = time.time()
-    message_count = user_data[chat_id]['message_count']
+    user_id = update.message.from_user.id
+    first_message_in_session = False
+    if user_id not in user_data:
+        user_data[user_id] = {'message_count': 0, 'last_active': time.time(), 'last_follow_up': 0, 'in_custom_feed': False}
+        first_message_in_session = True
+    else:
+        last_active = user_data[user_id]['last_active']
+        if time.time() - last_active > 1800:  # 30 minutes
+            first_message_in_session = True
+
+    user_data[user_id]['message_count'] += 1
+    user_data[user_id]['last_active'] = time.time()
+    message_count = user_data[user_id]['message_count']
 
     user_message = update.message.text
-    if "generate image of" in user_message.lower():
-        prompt = user_message.lower().replace("generate image of", "").strip()
-        try:
-            image_url = generate_image(prompt)
-            context.bot.send_photo(chat_id, image_url, caption=f"Here's the image for: {prompt}")
-        except Exception as e:
-            print(f"Error generating image: {e}")
-            update.message.reply_text("Sorry, I couldn't generate the image.")
-        return
-
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "You are a dominant and flirtatious girlfriend."},
-            {"role": "user", "content": user_message}
-        ]
-    )
-    bot_reply = response['choices'][0]['message']['content']
-    update.message.reply_text(bot_reply)
-
-    if message_count % 3 == 0 and picture_file_ids:
-        picture_index = (message_count // 3 - 1) % len(picture_file_ids)
-        picture_file_id = picture_file_ids[picture_index]
-        try:
-            context.bot.send_photo(chat_id, picture_file_id, caption="Here's a picture!")
-        except Exception as e:
-            print(f"Error sending photo: {e}")
-            context.bot.send_message(chat_id, "Unable to send photo. Please try again later.")
-
-def send_picture(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    if not picture_file_ids:
-        context.bot.send_message(chat_id, "No pictures are available right now.")
-        return
-
-    picture_index = chat_id % len(picture_file_ids)
-    picture_file_id = picture_file_ids[picture_index]
     try:
-        context.bot.send_photo(chat_id, picture_file_id, caption="Here's your requested picture!")
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a dominant and flirtatious girlfriend."},
+                {"role": "user", "content": user_message}
+            ]
+        )
+        bot_reply = response['choices'][0]['message']['content']
+        if first_message_in_session:
+            bot_reply += " (type / in chatbox to show all bot commands)"
+        update.message.reply_text(bot_reply)
     except Exception as e:
-        print(f"Error sending picture: {e}")
-        context.bot.send_message(chat_id, "Unable to send picture. Please try again later.")
+        print(f"Error in chat completion: {e}")
+        update.message.reply_text("I'm sorry, I encountered an error. Please try again later.")
 
-def handle_photo(update: Update, context: CallbackContext):
+    # Ask for donations after a certain number of messages
+    if message_count % 9 == 0:
+        donate(update, context)
+
+    # Send custom feed content if available
+    if user_id in custom_feed_file_ids and custom_feed_file_ids[user_id] and user_data[user_id]['in_custom_feed'] and message_count % 3 == 0:
+        send_custom_feed(update, context)
+    elif message_count % 3 == 0 and main_media_file_ids:
+        send_media(update, context)
+
+def send_media(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+
+    # Check if the user is in custom feed mode
+    if user_data[user_id]['in_custom_feed']:
+        if user_id in custom_feed_file_ids and custom_feed_file_ids[user_id]:
+            media_index = random.randint(0, len(custom_feed_file_ids[user_id]) - 1)
+            media_file_id = custom_feed_file_ids[user_id][media_index]
+        else:
+            context.bot.send_message(chat_id, "No custom media available right now.")
+            return
+    else:
+        if not main_media_file_ids:
+            context.bot.send_message(chat_id, "No media are available right now.")
+            return
+        media_index = random.randint(0, len(main_media_file_ids) - 1)
+        media_file_id = main_media_file_ids[media_index]
+
+    try:
+        if media_file_id.startswith("photo:"):
+            context.bot.send_photo(chat_id, media_file_id.split(":")[1])
+        elif media_file_id.startswith("video:"):
+            context.bot.send_video(chat_id, media_file_id.split(":")[1])
+        else:
+            context.bot.send_document(chat_id, media_file_id)
+    except Exception as e:
+        print(f"Error sending media: {e}")
+        context.bot.send_message(chat_id, "Unable to send media. Please try again later.")
+
+def send_custom_feed(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    if user_id in custom_feed_file_ids and custom_feed_file_ids[user_id]:
+        file_id = random.choice(custom_feed_file_ids[user_id])
+        try:
+            if file_id.startswith("photo:"):
+                context.bot.send_photo(chat_id, file_id.split(":")[1])
+            elif file_id.startswith("video:"):
+                context.bot.send_video(chat_id, file_id.split(":")[1])
+            else:
+                context.bot.send_document(chat_id, file_id)
+        except Exception as e:
+            print(f"Error sending custom feed content: {e}")
+            context.bot.send_message(chat_id, "Unable to send custom feed content. Please try again later.")
+
+def handle_media(update: Update, context: CallbackContext):
     try:
         chat_id = update.message.chat_id
         user_id = update.message.from_user.id
 
-        if isinstance(admin_user_ids, list) and all(isinstance(i, int) for i in admin_user_ids):
-            if user_id in admin_user_ids:
-                photo_file_id = update.message.photo[-1].file_id
-                picture_file_ids.append(photo_file_id)
-                context.bot.send_message(chat_id, "Photo saved successfully!")
-            else:
-                context.bot.send_message(chat_id, "Sorry, only admins can upload photos.")
-        else:
-            print(f"Unexpected admin_user_ids type or content: {admin_user_ids}")
+        if user_data[user_id]['in_custom_feed']:
+            # Save media to custom feed for the specific user (including admins)
+            if user_id not in custom_feed_file_ids:
+                custom_feed_file_ids[user_id] = []
 
+            if update.message.photo:
+                file_id = f"photo:{update.message.photo[-1].file_id}"
+                custom_feed_file_ids[user_id].append(file_id)
+                context.bot.send_message(chat_id, "Your custom photo has been saved. *Custom feed mode started. Use /exitcustomfeed to return to admin submitted media content*")
+            elif update.message.video:
+                file_id = f"video:{update.message.video.file_id}"
+                custom_feed_file_ids[user_id].append(file_id)
+                context.bot.send_message(chat_id, "Your custom video has been saved. *Custom feed mode started. Use /exitcustomfeed to return to admin submitted media content*")
+        else:
+            # Save media to main media list if the sender is an admin
+            if user_id in admin_user_ids:
+                if update.message.photo:
+                    file_id = f"photo:{update.message.photo[-1].file_id}"
+                    main_media_file_ids.append(file_id)
+                    context.bot.send_message(chat_id, "Admin photo saved successfully!")
+                elif update.message.video:
+                    file_id = f"video:{update.message.video.file_id}"
+                    main_media_file_ids.append(file_id)
+                    context.bot.send_message(chat_id, "Admin video saved successfully!")
     except Exception as e:
-        print(f"Error in handle_photo: {e}")
+        print(f"Error in handle_media: {e}")
 
 def all_pictures(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
 
     if user_id not in admin_user_ids:
-        context.bot.send_message(chat_id, "You do not have permission to view all pictures.")
+        context.bot.send_message(chat_id, "You do not have permission to view all media.")
         return
 
-    if not picture_file_ids:
-        context.bot.send_message(chat_id, "No pictures have been saved.")
+    if not main_media_file_ids:
+        context.bot.send_message(chat_id, "No media have been saved.")
     else:
-        message = "Saved Pictures:\n"
-        for index, file_id in enumerate(picture_file_ids, start=1):
+        message = "Saved Media:\n"
+        for index, file_id in enumerate(main_media_file_ids, start=1):
             message += f"{index}. {file_id}\n"
         context.bot.send_message(chat_id, message)
+
+def delete_picture(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+
+    if user_id not in admin_user_ids:
+        context.bot.send_message(chat_id, "You do not have permission to delete media.")
+        return
+
+    try:
+        index = int(context.args[0]) - 1
+        if 0 <= index < len(main_media_file_ids):
+            del main_media_file_ids[index]
+            context.bot.send_message(chat_id, f"Media at index {index + 1} has been deleted.")
+        else:
+            context.bot.send_message(chat_id, "Invalid index number provided.")
+    except (IndexError, ValueError):
+        context.bot.send_message(chat_id, "Please provide a valid index number.")
 
 def delete_pictures(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
 
     if user_id not in admin_user_ids:
-        context.bot.send_message(chat_id, "You do not have permission to delete pictures.")
+        context.bot.send_message(chat_id, "You do not have permission to delete media.")
         return
 
-    try:
-        picture_numbers = context.args
-        indices_to_delete = [int(num) - 1 for num in picture_numbers]
-        indices_to_delete.sort(reverse=True)
+    main_media_file_ids.clear()
+    context.bot.send_message(chat_id, "All admin media have been deleted.")
 
-        for index in indices_to_delete:
-            if 0 <= index < len(picture_file_ids):
-                del picture_file_ids[index]
-
-        context.bot.send_message(chat_id, "Selected pictures have been deleted.")
-    except ValueError:
-        context.bot.send_message(chat_id, "Please provide valid picture numbers.")
-    except Exception as e:
-        context.bot.send_message(chat_id, f"Error occurred while deleting pictures: {e}")
-
-def precheckout_callback(update: Update, context: CallbackContext):
-    query = update.pre_checkout_query
-    if query.invoice_payload not in ["voluntary-support", "mandatory-support"]:
-        query.answer(ok=False, error_message="Something went wrong...")
-    else:
-        query.answer(ok=True)
-
-def successful_payment_callback(update: Update, context: CallbackContext):
+def deletecustomfeed(update: Update, context: CallbackContext):
     chat_id = update.message.chat_id
-    user_data[chat_id]['message_count'] = 0
-    update.message.reply_text("Thank you for your support! Your message count has been reset.")
+    user_id = update.message.from_user.id
 
-def button(update: Update, context: CallbackContext):
-    query = update.callback_query
-    chat_id = query.message.chat_id
-    query.answer()
+    if user_id not in custom_feed_file_ids or not custom_feed_file_ids[user_id]:
+        context.bot.send_message(chat_id, "You don't have any custom feed content.")
+        return
 
-    if query.data == 'pay_25':
-        prices = [LabeledPrice("Mandatory Payment", 2500)]
-        context.bot.send_invoice(
-            chat_id, "Mandatory Payment", "Support to continue chatting", "mandatory-support",
-            payment_provider_token, "USD", prices
-        )
-    elif query.data == 'pay_5':
-        prices = [LabeledPrice("20 More Messages", 500)]
-        context.bot.send_invoice(
-            chat_id, "20 More Messages", "Payment for 20 more messages", "mandatory-support",
-            payment_provider_token, "USD", prices
-        )
+    custom_feed_file_ids[user_id].clear()
+    context.bot.send_message(chat_id, "Your custom feed content has been deleted.")
+
+def donate(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    donation_link = "https://donate.stripe.com/bIYdU818x21Jav6cNa"
+    context.bot.send_message(chat_id, f"Support the bot by donating! Please click the link below:\n{donation_link}")
+
+def buycontent(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    buy_link = "https://buffalosuede.gumroad.com/l/uzigk"
+    context.bot.send_message(chat_id, f"Buy exclusive content! Please click the link below:\n{buy_link}")
+
+def customfeed(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    user_data[user_id]['in_custom_feed'] = True
+    context.bot.send_message(chat_id, "Custom feed mode activated. Please send a picture or video to set as your custom feed content.")
+
+def exitcustomfeed(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    if user_data[user_id]['in_custom_feed']:
+        user_data[user_id]['in_custom_feed'] = False
+        context.bot.send_message(chat_id, "Custom feed mode exited.")
+    else:
+        context.bot.send_message(chat_id, "You were not in custom feed mode.")
 
 def main():
     print("Bot is starting...")
@@ -218,14 +261,18 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("sendpicture", send_picture))
+    dp.add_handler(CommandHandler("sendpicture", send_media))
+    dp.add_handler(CommandHandler("sendmedia", send_media))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, chat))
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
+    dp.add_handler(MessageHandler(Filters.photo | Filters.video, handle_media))
     dp.add_handler(CommandHandler("allpictures", all_pictures))
-    dp.add_handler(CommandHandler("deletepictures", delete_pictures, pass_args=True))
-    dp.add_handler(CallbackQueryHandler(button))
-    dp.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    dp.add_handler(MessageHandler(Filters.successful_payment, successful_payment_callback))
+    dp.add_handler(CommandHandler("deletepicture", delete_picture, pass_args=True))
+    dp.add_handler(CommandHandler("deletepictures", delete_pictures))
+    dp.add_handler(CommandHandler("deletecustomfeed", deletecustomfeed))
+    dp.add_handler(CommandHandler("donate", donate))
+    dp.add_handler(CommandHandler("buycontent", buycontent))
+    dp.add_handler(CommandHandler("customfeed", customfeed))
+    dp.add_handler(CommandHandler("exitcustomfeed", exitcustomfeed))
 
     print("Handlers added...")
     threading.Thread(target=send_follow_up, args=(updater,), daemon=True).start()
